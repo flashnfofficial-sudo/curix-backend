@@ -5,6 +5,7 @@
 //   GEMINI_MODEL     (optional)  use the SAME model name your web CURIX already uses
 //   CURIX_APP_TOKEN  (required)  long random text; same as curixAppToken in gradle.properties
 //   OWNER_NAME       (optional)  default "Moidul"
+//   GEMINI_FALLBACK_MODEL (optional) used if the main model is busy (503/429)
 
 const json = (code, obj) => ({
   statusCode: code,
@@ -72,20 +73,54 @@ exports.handler = async (event) => {
     + (mem ? `\n\nThings the user asked you to remember:\n${mem}` : '')
     + `\nLanguage setting in the app: ${body.lang || 'auto'} (the user's own language wins).`;
 
-  try {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents,
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.7 },
-      }),
-    });
-    const data = await r.json();
-    if (!r.ok) return json(502, { error: (data.error && data.error.message) || 'Gemini error' });
+  const fallback = process.env.GEMINI_FALLBACK_MODEL;
+  // Netlify cuts a function at ~10 s and then sends an ugly HTML 504. So we keep our own
+  // time budget (8.5 s): main model, then (if time is left) fallback model or one more try.
+  const deadline = Date.now() + 8500;
+  const attempts = [model, fallback && fallback !== model ? fallback : model];
 
-    const text = ((data.candidates || [])[0]?.content?.parts || []).map((p) => p.text || '').join('');
+  const callGemini = async (m, ms) => {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ms);
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+        method: 'POST',
+        signal: ctl.signal,
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] },
+          contents,
+          generationConfig: { responseMimeType: 'application/json', temperature: 0.7 },
+        }),
+      });
+      let data = {};
+      try { data = await r.json(); } catch { /* keep empty */ }
+      return { ok: r.ok, status: r.status, data };
+    } catch (e) {
+      return { ok: false, status: 504, data: { error: { message: 'Gemini was too slow to answer (timeout).' } } };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  try {
+    let last = null;
+    for (let i = 0; i < attempts.length; i++) {
+      const left = deadline - Date.now();
+      if (left < 1500) break;
+      // first try gets at most 5.5 s so a second try is still possible
+      last = await callGemini(attempts[i], i === 0 ? Math.min(5500, left - 300) : left - 300);
+      if (last.ok) break;
+      const retryable = [429, 500, 503, 504].includes(last.status);
+      if (!retryable) break;                   // bad key / bad model name: do not retry
+    }
+    if (!last) return json(503, { error: 'Backend ran out of time. Please try again.' });
+    if (!last.ok) {
+      const msg = (last.data.error && last.data.error.message) || 'Gemini error';
+      return json(last.status === 504 ? 503 : 502, { error: msg });
+    }
+
+    const text = ((last.data.candidates || [])[0]?.content?.parts || []).map((p) => p.text || '').join('');
     let out;
     try { out = JSON.parse(text); } catch { out = { reply: text || '...', action: null }; }
     out.reply = String(out.reply || '');
