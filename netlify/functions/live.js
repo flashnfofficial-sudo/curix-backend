@@ -6,9 +6,8 @@
 //   CURIX_APP_TOKEN     required (already set)
 //   GEMINI_LIVE_MODEL   optional, default gemini-3.8-live
 //   LIVE_VOICE          optional, default Kore (Puck, Leda, Charon, Aoede, Fenrir, ...)
-//   LIVE_SETUP_STYLE    optional: "flat" (default, as in Google's raw WebSocket guide) or "legacy"
-//                       (responseModalities/speechConfig inside generationConfig). Switch if the
-//                       app shows "Unknown name" / 1007 when starting LIVE.
+//   LIVE_SETUP_STYLE    optional: "legacy" (default: responseModalities/speechConfig inside generationConfig,
+//                       confirmed to be accepted by the server) or "flat".
 //   LIVE_SEARCH         optional, "false" turns Google Search off
 //   LIVE_BLOCKING       optional, "false" omits behavior:BLOCKING from the function declarations
 //   OWNER_NAME          optional, default Moidul
@@ -95,7 +94,7 @@ exports.handler = async (event) => {
   const owner = process.env.OWNER_NAME || 'Moidul';
   const model = process.env.GEMINI_LIVE_MODEL || 'gemini-3.8-live';
   const voice = process.env.LIVE_VOICE || 'Kore';
-  const style = (process.env.LIVE_SETUP_STYLE || 'flat').toLowerCase();
+  const style = (process.env.LIVE_SETUP_STYLE || 'legacy').toLowerCase();
   const mem = (body.memories || []).slice(0, 50).map((s) => '- ' + String(s).slice(0, 300)).join('\n');
 
   // 1) short-lived token for the app
