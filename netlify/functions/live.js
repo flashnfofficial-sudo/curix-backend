@@ -12,6 +12,8 @@
 //   LIVE_BLOCKING       optional, "false" omits behavior:BLOCKING from the function declarations
 //   OWNER_NAME          optional, default Moidul
 
+const ALL_VOICES = ['Achernar','Aoede','Autonoe','Callirrhoe','Despina','Erinome','Gacrux','Kore','Laomedeia','Leda','Pulcherrima','Sulafat','Vindemiatrix','Zephyr','Achird','Algenib','Algieba','Alnilam','Charon','Enceladus','Fenrir','Iapetus','Orus','Puck','Rasalgethi','Sadachbia','Sadaltager','Schedar','Umbriel','Zubenelgenubi'];
+
 const json = (code, obj) => ({
   statusCode: code,
   headers: { 'Content-Type': 'application/json; charset=utf-8' },
@@ -93,7 +95,8 @@ exports.handler = async (event) => {
 
   const owner = process.env.OWNER_NAME || 'Moidul';
   const model = process.env.GEMINI_LIVE_MODEL || 'gemini-3.8-live';
-  const voice = process.env.LIVE_VOICE || 'Kore';
+  const asked = ALL_VOICES.find((x) => x.toLowerCase() === String(body.voice || '').toLowerCase());
+  const voice = asked || process.env.LIVE_VOICE || 'Kore';
   const style = (process.env.LIVE_SETUP_STYLE || 'legacy').toLowerCase();
   const mem = (body.memories || []).slice(0, 50).map((s) => '- ' + String(s).slice(0, 300)).join('\n');
 

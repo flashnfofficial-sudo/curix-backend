@@ -1,14 +1,29 @@
 // Netlify Function: /.netlify/functions/tts   (the voice)
 // Put this file next to curix.js in netlify/functions/.
-// Two voice engines, pick with TTS_PROVIDER = "gemini" or "elevenlabs".
-// If TTS_PROVIDER is not set: ElevenLabs when its two variables exist, otherwise Gemini.
+// Voice engines, pick with TTS_PROVIDER = "google", "gemini" or "elevenlabs".
+// If TTS_PROVIDER is not set the Gemini voice is used. The app can choose any of the 30 Gemini voices
+// (female and male) and sends the name in the request.
+//
+//  Google Cloud   : GOOGLE_CLOUD_API_KEY  (Cloud Text-to-Speech API enabled, billing on)
+//                   GOOGLE_TTS_VOICE      optional, default Aoede. Female Chirp 3 HD voices: Achernar, Aoede,
+//                                         Autonoe, Callirrhoe, Despina, Erinome, Gacrux, Kore, Laomedeia, Leda,
+//                                         Pulcherrima, Sulafat, Vindemiatrix, Zephyr
+//                   GOOGLE_TTS_VOICE_EN / _HI / _BN  optional full voice names, e.g. en-IN-Chirp3-HD-Leda
+//                   GOOGLE_TTS_RATE       optional speaking rate, e.g. 1.05
 //
 //  Gemini voice   : GEMINI_API_KEY (you already have it)
 //                   GEMINI_TTS_MODEL  optional, default gemini-3.1-flash-tts-preview
-//                   GEMINI_TTS_VOICE  optional, default Kore (others: Puck, Leda, Charon, Aoede, Fenrir ...)
+//                   GEMINI_TTS_VOICE  optional, default Aoede (breezy, female). Other female voices:
+//                                     Sulafat (warm), Leda (youthful), Zephyr (bright), Kore (firm), Achernar (soft),
+//                                     Vindemiatrix (gentle), Despina (smooth), Gacrux (mature), Callirrhoe (easy-going)
+//                   GEMINI_TTS_STYLE  optional, how she should speak (default: warm, friendly and natural)
 //  ElevenLabs     : ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 //                   ELEVENLABS_MODEL (default eleven_flash_v2_5), ELEVENLABS_MODEL_BN (default eleven_v3)
 //  Both           : CURIX_APP_TOKEN (same token as the brain function)
+
+const FEMALE = ['Achernar','Aoede','Autonoe','Callirrhoe','Despina','Erinome','Gacrux','Kore','Laomedeia','Leda','Pulcherrima','Sulafat','Vindemiatrix','Zephyr'];
+const MALE = ['Achird','Algenib','Algieba','Alnilam','Charon','Enceladus','Fenrir','Iapetus','Orus','Puck','Rasalgethi','Sadachbia','Sadaltager','Schedar','Umbriel','Zubenelgenubi'];
+const pickVoice = (v) => [...FEMALE, ...MALE].find((x) => x.toLowerCase() === String(v || '').toLowerCase()) || null;
 
 const err = (code, message) => ({
   statusCode: code,
@@ -33,17 +48,43 @@ function pcmToWav(pcm, rate) {
   return Buffer.concat([h, pcm]);
 }
 
-async function geminiVoice(text, signal) {
+
+async function googleVoice(text, signal, chosen) {
+  const key = process.env.GOOGLE_CLOUD_API_KEY;
+  if (!key) return err(500, 'GOOGLE_CLOUD_API_KEY is not set');
+  const bn = /[\u0980-\u09FF]/.test(text);
+  const hi = /[\u0900-\u097F]/.test(text);
+  const lang = bn ? 'bn-IN' : hi ? 'hi-IN' : 'en-IN';
+  const short = lang.slice(0, 2).toUpperCase();
+  const name = process.env['GOOGLE_TTS_VOICE_' + short]
+    || `${lang}-Chirp3-HD-${chosen || process.env.GOOGLE_TTS_VOICE || 'Aoede'}`;
+  const audioConfig = { audioEncoding: 'MP3' };
+  if (process.env.GOOGLE_TTS_RATE) audioConfig.speakingRate = parseFloat(process.env.GOOGLE_TTS_RATE);
+  const r = await fetch('https://texttospeech.googleapis.com/v1/text:synthesize?key=' + encodeURIComponent(key), {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input: { text }, voice: { languageCode: lang, name }, audioConfig }),
+  });
+  let data = {};
+  try { data = await r.json(); } catch { /* ignore */ }
+  if (!r.ok) return err(502, ((data.error && data.error.message) || 'Google TTS error ' + r.status).slice(0, 300));
+  if (!data.audioContent) return err(502, 'Google TTS returned no audio');
+  return audio(Buffer.from(data.audioContent, 'base64'), 'audio/mpeg');
+}
+
+async function geminiVoice(text, signal, chosen) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return err(500, 'GEMINI_API_KEY is not set');
   const model = process.env.GEMINI_TTS_MODEL || 'gemini-3.1-flash-tts-preview';
-  const voice = process.env.GEMINI_TTS_VOICE || 'Kore';
+  const voice = process.env.GEMINI_TTS_VOICE || 'Aoede';
+  const style = process.env.GEMINI_TTS_STYLE || 'a warm, friendly and natural female voice';
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: 'POST',
     signal,
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: `Say in a warm, friendly, natural voice: ${text}` }] }],
+      contents: [{ parts: [{ text: `Say in ${style}: ${text}` }] }],
       generationConfig: {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
@@ -98,13 +139,15 @@ exports.handler = async (event) => {
   const text = String(body.text || '').replace(/[*_`#]/g, '').trim().slice(0, 800);  // cap = cost control
   if (!text) return err(400, 'No text');
 
-  const provider = (process.env.TTS_PROVIDER
-    || (process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_VOICE_ID ? 'elevenlabs' : 'gemini')).toLowerCase();
+  // Default engine is Gemini voice (uses your GEMINI_API_KEY). Set TTS_PROVIDER to google or elevenlabs to change.
+  const provider = (process.env.TTS_PROVIDER || 'gemini').toLowerCase();
+  const chosen = pickVoice(body.voice);
 
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 8500);
   try {
-    return provider === 'gemini' ? await geminiVoice(text, ctl.signal) : await elevenVoice(text, ctl.signal);
+    if (provider === 'google') return await googleVoice(text, ctl.signal, chosen);
+    return provider === 'gemini' ? await geminiVoice(text, ctl.signal, chosen) : await elevenVoice(text, ctl.signal);
   } catch (e) {
     return err(502, 'TTS failed: ' + (e.name === 'AbortError' ? 'timeout' : e.message));
   } finally {
