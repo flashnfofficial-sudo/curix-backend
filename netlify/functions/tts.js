@@ -13,7 +13,7 @@
 //
 //  Gemini voice   : GEMINI_API_KEY (you already have it)
 //                   GEMINI_TTS_MODEL  optional, default gemini-3.1-flash-tts-preview
-//                   GEMINI_TTS_VOICE  optional, default Aoede (breezy, female). Other female voices:
+//                   GEMINI_TTS_VOICE  optional default only (the app's Female/Male choice wins). Female voices:
 //                                     Sulafat (warm), Leda (youthful), Zephyr (bright), Kore (firm), Achernar (soft),
 //                                     Vindemiatrix (gentle), Despina (smooth), Gacrux (mature), Callirrhoe (easy-going)
 //                   GEMINI_TTS_STYLE  optional, how she should speak (default: warm, friendly and natural)
@@ -77,29 +77,46 @@ async function geminiVoice(text, signal, chosen) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return err(500, 'GEMINI_API_KEY is not set');
   const model = process.env.GEMINI_TTS_MODEL || 'gemini-3.1-flash-tts-preview';
-  const voice = process.env.GEMINI_TTS_VOICE || 'Aoede';
-  const style = process.env.GEMINI_TTS_STYLE || 'a warm, friendly and natural female voice';
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-    method: 'POST',
-    signal,
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: `Say in ${style}: ${text}` }] }],
-      generationConfig: {
-        responseModalities: ['AUDIO'],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
-      },
-    }),
+  // the voice chosen in the app wins; the env variable is only the default
+  const voice = chosen || pickVoice(process.env.GEMINI_TTS_VOICE) || 'Kore';
+  const style = process.env.GEMINI_TTS_STYLE || 'a warm, friendly and natural voice';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: `Say in ${style}: ${text}` }] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+    },
   });
-  let data = {};
-  try { data = await r.json(); } catch { /* ignore */ }
-  if (!r.ok) return err(502, ((data.error && data.error.message) || 'Gemini TTS error ' + r.status).slice(0, 300));
-  const part = (((data.candidates || [])[0] || {}).content || {}).parts;
-  const inline = part && part[0] && (part[0].inlineData || part[0].inline_data);
-  if (!inline || !inline.data) return err(502, 'Gemini TTS returned no audio (model name may be wrong).');
-  const m = /rate=(\d+)/.exec(inline.mimeType || inline.mime_type || '');
-  const rate = m ? parseInt(m[1], 10) : 24000;
-  return audio(pcmToWav(Buffer.from(inline.data, 'base64'), rate), 'audio/wav');
+
+  // The preview TTS models sometimes answer 429/500 or return no audio: try twice.
+  let lastMsg = 'Gemini TTS failed';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await fetch(url, {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      body,
+    });
+    let data = {};
+    try { data = await r.json(); } catch { /* ignore */ }
+    if (r.ok) {
+      const parts = ((((data.candidates || [])[0] || {}).content || {}).parts) || [];
+      const withAudio = parts.find((p) => (p.inlineData || p.inline_data || {}).data);
+      if (withAudio) {
+        const inline = withAudio.inlineData || withAudio.inline_data;
+        const m = /rate=(\d+)/.exec(inline.mimeType || inline.mime_type || '');
+        const rate = m ? parseInt(m[1], 10) : 24000;
+        return audio(pcmToWav(Buffer.from(inline.data, 'base64'), rate), 'audio/wav');
+      }
+      lastMsg = 'Gemini TTS returned no audio (model name may be wrong, or the model answered with text)';
+    } else {
+      lastMsg = ((data.error && data.error.message) || 'Gemini TTS error ' + r.status);
+      if (![429, 500, 503].includes(r.status)) break; // wrong key / model: retrying will not help
+    }
+    if (attempt === 0) await new Promise((res) => setTimeout(res, 400));
+  }
+  return err(502, lastMsg.slice(0, 300));
 }
 
 async function elevenVoice(text, signal) {
