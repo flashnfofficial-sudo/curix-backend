@@ -51,6 +51,7 @@ const declarations = () => {
     fn('swipe', 'Swipe on the screen.', { direction: S('up, down, left or right') }, ['direction']),
     fn('type_text', 'Type text into the focused input field.', { text: S('Text to type'), append: { type: 'BOOLEAN', description: 'true to add to existing text' } }, ['text']),
     fn('press_enter', 'Press Enter/Search on the keyboard of the focused field.'),
+    fn('open_screen', 'Open one of CURIX\'s own screens. camera = look through the phone camera and answer the question; music = recognise a song playing nearby.', { screen: S('camera, music, device or permissions'), question: S('What to ask about what the camera sees') }, ['screen']),
     fn('remember', 'Save a fact the user asked you to remember.', { text: S('The fact') }, ['text']),
   ];
   if (process.env.LIVE_BLOCKING !== 'false') list.forEach((d) => { d.behavior = 'BLOCKING'; });
@@ -78,6 +79,7 @@ PHONE CONTROL
 - To search the web by voice, answer with Google Search if you have it; use web_search only when the user wants to see the results on screen.
 - Never invent phone numbers. If several contacts match, ask which one.
 - Never claim a song is playing; you can only open YouTube search or send media keys.
+- When the user asks what something is, wants text or a document read, or asks about their surroundings, call open_screen with screen camera and their question. When they ask which song is playing, call open_screen with screen music. Say one short line; the answer appears on that screen.
 ${memories ? `\nThings the user asked you to remember:\n${memories}\n` : ''}`;
 
 exports.handler = async (event) => {
